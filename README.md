@@ -134,8 +134,7 @@ PROJECT/
 ├── main.py                         # Single entry point (full pipeline)
 ├── dashboard.py                    # Streamlit visual dashboard
 ├── simulate_replay.py              # Tick-by-tick simulation replay
-├── analysis.ipynb                  # Offline analysis and benchmarks
-├── analysis.nbconvert.ipynb
+├── analysis.nbconvert.ipynb        # Offline analysis and benchmarks
 ├── .env                            # API credentials — NEVER commit this
 ├── .gitignore
 │
