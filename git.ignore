@@ -1,0 +1,18 @@
+# API Credentials
+.env
+
+# Raw Data
+data/
+*.csv
+*.xlsx
+
+# Generated Features & Labels
+*.parquet
+
+# Saved Models
+*.pkl
+
+# Python & Jupyter Caches
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
