@@ -157,7 +157,7 @@ Dom_Trade/
 ├── simulate_replay.py              # Tick-by-tick simulation replay
 ├── main.py                         # Single entry point — runs full pipeline
 ├── dashboard.py                    # Streamlit visual dashboard
-├── analysis.ipynb                  # Offline benchmarks and algorithm comparison
+├── analysis.nbconvert.ipynb                  # Offline benchmarks and algorithm comparison
 │
 ├── .env                            # API credentials — NEVER commit
 ├── .gitignore
