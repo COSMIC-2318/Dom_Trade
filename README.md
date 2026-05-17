@@ -1,21 +1,41 @@
 # DOM Trade — Regime-Aware Forecasting System
 
-> **Order Book Data Collection & Stock Price Prediction**  
-> NSE · Angel One SmartAPI · WebSocket Mode 3 · River · LightGBM  
-> GMM · ARF · FTRL · Hoeffding Tree · PA Classifier · ADWIN
+> **Order Book Data Collection & Stock Price Prediction for NSE Equities**
+>
+> Built on live Level-2 order book data · Real-time regime detection · Fully online learning · No retraining
+
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Exchange](https://img.shields.io/badge/exchange-NSE-orange.svg)](https://www.nseindia.com/)
+[![Broker](https://img.shields.io/badge/broker-Angel%20One%20SmartAPI-red.svg)](https://smartapi.angelbroking.com/)
+[![Models](https://img.shields.io/badge/models-GMM%20·%20ARF%20·%20FTRL%20·%20Hoeffding%20·%20PA-green.svg)]()
 
 ---
 
 ## Performance at a Glance
 
-| | Day 1 (May 13 2026) | Day 2 (May 14 2026) |
+|  | Day 1 — May 13 2026 | Day 2 — May 14 2026 (out-of-sample) |
 |---|---|---|
 | **Naive Baseline** | 41.15% | 41.88% |
 | **Ensemble Accuracy** | **85.04%** | **83.41%** |
-| **Improvement** | +43.89 pp | +41.53 pp |
-| **Mean Latency** | 0.315 ms | 0.152 ms |
-| **Drift Events** | 7 | 9 |
-| **Ticks** | 34,743 (train) / 6,943 (test) | 10,250 (out-of-sample) |
+| **Lift over Baseline** | +43.89 pp | +41.53 pp |
+| **Mean Inference Latency** | 0.315 ms | 0.152 ms |
+| **Drift Events Detected** | 7 | 9 |
+| **Ticks** | 34,743 train / 6,943 test | 10,250 |
+
+> Day 2 accuracy drop: only **−1.63 percentage points** on a completely unseen trading session with online learning enabled.
+
+---
+
+## Documentation
+
+Full technical documentation is in [`DOM.pdf`](./DOM.pdf), covering:
+
+- Complete mathematical derivations for all 46 features
+- Regime detection pipeline (GMM → ARF) with formal algorithm specifications
+- FTRL, Hoeffding Tree, and PA Classifier update rules
+- ADWIN drift detection statistical test
+- All design decisions with rationale and rejected alternatives (Kalman, HMM, DeepLOB, LinUCB, AROW)
+- Honest limitations and prioritised future work roadmap
 
 ---
 
@@ -23,8 +43,8 @@
 
 1. [What This Project Is](#1-what-this-project-is)
 2. [Why Order Book Data](#2-why-order-book-data)
-3. [Project Architecture](#3-project-architecture)
-4. [File Structure](#4-file-structure)
+3. [System Architecture](#3-system-architecture)
+4. [Repository Structure](#4-repository-structure)
 5. [Installation](#5-installation)
 6. [How to Run](#6-how-to-run)
 7. [Feature Engineering](#7-feature-engineering)
@@ -46,9 +66,9 @@ DOM Trade is an **end-to-end adaptive forecasting system** for NSE equities buil
 - Engineers **46 microstructure features** from raw ticks
 - Detects the current market regime using a **two-stage ML pipeline** (GMM → ARF)
 - Produces **directional predictions (UP/DOWN)** using three parallel online models fused by a dynamic weighted ensemble
-- Adapts continuously — no retraining, no manual intervention
+- Adapts **continuously per tick** — no retraining, no batch jobs, no manual intervention
 
-**Central thesis:** A single static model trained once cannot adapt to changing market conditions. Markets behave fundamentally differently when trending up, trending down, or consolidating. This system detects which condition is active and routes predictions through models specifically suited to that regime.
+**Central thesis:** A single static model trained once cannot adapt to changing market conditions. Markets behave fundamentally differently when trending, falling, or consolidating. This system detects which condition is active and routes predictions through models specifically suited to that regime.
 
 ---
 
@@ -56,58 +76,63 @@ DOM Trade is an **end-to-end adaptive forecasting system** for NSE equities buil
 
 Price alone tells you what *happened*. The order book tells you what is *about to happen*.
 
-When 50,000 shares are sitting at a bid level, that is a wall — price is unlikely to fall through it easily. When the ask side is thin, price can run up fast. No chart-based or price-only model sees this. Order book microstructure is the closest thing to reading institutional intent in real time.
+When 50,000 shares are sitting at a bid level, that is a wall — price is unlikely to fall through it easily. When the ask side is thin, price can run up fast. No OHLCV or chart-based model sees this. Order book microstructure is the closest thing to reading institutional intent in real time.
 
-**Key insight:** Level-2 data (5 bid levels + 5 ask levels) reveals supply-demand imbalances before they manifest in price. OBI (Order Book Imbalance) is statistically predictive of the next 30-tick mid-price direction with a lead time that allows meaningful action within the WebSocket tick interval.
+**Key insight:** Level-2 data (5 bid levels + 5 ask levels) reveals supply-demand imbalances *before* they manifest in price. OBI (Order Book Imbalance) is statistically predictive of the next 30-tick mid-price direction with a lead time that allows meaningful action within the WebSocket tick interval.
 
 ---
 
-## 3. Project Architecture
-
-The system is organized into seven layers that run sequentially in the pipeline:
+## 3. System Architecture
 
 ```
-Raw WebSocket Ticks (Angel One API)
+Raw WebSocket Ticks  ←  Angel One SmartAPI (Mode 3, 27 columns/tick)
          │
          ▼
-┌─────────────────────────────┐
-│  A  feature_engine.py       │  46 microstructure features from raw ticks
-└─────────────┬───────────────┘
-              │
-              ▼
-┌─────────────────────────────┐
-│  B  regime_detector_v2.py   │  GMM (offline labels) + ARF (online detection)
-└─────────────┬───────────────┘
-              │  regime ∈ {Bullish, Bearish, Volatile}
-              ▼
-┌─────────────────────────────────────────────────────┐
-│  C  forecasters.py                                  │
-│     ├── FTRL    (trending regimes)                  │
-│     ├── Hoeffding Tree  (regime boundaries)         │
-│     └── PA Classifier   (low-volatility regimes)   │
-└─────────────┬───────────────────────────────────────┘
-              │  3 parallel predictions
-              ▼
-┌─────────────────────────────┐
-│  D  ensemble.py             │  Dynamic weighted fusion + ADWIN drift detection
-└─────────────┬───────────────┘
-              │  final UP / DOWN signal
-              ▼
-┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-│ E backtest   │   │ F live_engine│   │ G dashboard  │
-│ (evaluation) │   │ (production) │   │ (Streamlit)  │
-└──────────────┘   └──────────────┘   └──────────────┘
+┌─────────────────────────────────┐
+│  A   feature_engine.py          │  46 microstructure features from raw ticks
+│      Price · OBI · S/R · Rolling│
+└──────────────┬──────────────────┘
+               │
+               ▼
+┌─────────────────────────────────┐
+│  B   regime_detector_v2.py      │  Stage 1: GMM  (offline label generation)
+│                                 │  Stage 2: ARF  (online real-time detection)
+└──────────────┬──────────────────┘
+               │  regime ∈ { Bullish=0, Bearish=1, Volatile=2 }
+               ▼
+┌──────────────────────────────────────────────────────┐
+│  C   forecasters.py                                  │
+│      ├── FTRL           (trending regimes)           │
+│      ├── Hoeffding Tree  (regime boundaries)         │
+│      └── PA Classifier   (low-volatility regimes)   │
+└──────────────┬───────────────────────────────────────┘
+               │  3 parallel UP/DOWN predictions
+               ▼
+┌─────────────────────────────────┐
+│  D   ensemble.py                │  Two-stage dynamic weighting
+│                                 │  + ADWIN concept drift detection
+└──────────────┬──────────────────┘
+               │  final UP / DOWN signal
+       ┌───────┴──────────┬──────────────┐
+       ▼                  ▼              ▼
+┌────────────┐   ┌──────────────┐  ┌───────────┐
+│ E backtest │   │ F live_      │  │ G dash-   │
+│ .py        │   │ engine.py    │  │ board.py  │
+│ evaluation │   │ production   │  │ Streamlit │
+└────────────┘   └──────────────┘  └───────────┘
 ```
 
 ---
 
-## 4. File Structure
+## 4. Repository Structure
 
 ```
-PROJECT/
+Dom_Trade/
+│
+├── DOM.pdf                         # Full technical documentation
 │
 ├── data/
-│   ├── orderbook.csv.xlsx          # Raw NSE order book data (Day 1 training)
+│   ├── orderbook.csv.xlsx          # Raw NSE L2 order book data (Day 1)
 │   └── new_day.xlsx                # Day 2 data for out-of-sample testing
 │
 ├── regime/
@@ -115,11 +140,9 @@ PROJECT/
 │   ├── regime_detector_v2.py       # GMM + ARF regime detection
 │   ├── forecasters.py              # FTRL + Hoeffding Tree + PA Classifier
 │   ├── ensemble.py                 # Dynamic weights + ADWIN drift detection
-│   └── live_engine.py              # Live API streaming and inference
+│   └── live_engine.py              # Live WebSocket streaming and inference
 │
 ├── smartapi/                       # Angel One API wrapper
-│   ├── __pycache__/
-│   ├── tests/
 │   ├── __init__.py
 │   ├── config.py
 │   ├── rate_limiter.py
@@ -129,28 +152,28 @@ PROJECT/
 ├── plots/                          # Generated visualisations
 │
 ├── feature_engine.py               # 46 features from raw ticks
-├── backtest.py                     # Full Day 1 evaluation
+├── backtest.py                     # Full Day 1 evaluation pipeline
 ├── test_new_data.py                # Out-of-sample Day 2 test
-├── main.py                         # Single entry point (full pipeline)
-├── dashboard.py                    # Streamlit visual dashboard
 ├── simulate_replay.py              # Tick-by-tick simulation replay
-├── analysis.nbconvert.ipynb        # Offline analysis and benchmarks
-├── .env                            # API credentials — NEVER commit this
+├── main.py                         # Single entry point — runs full pipeline
+├── dashboard.py                    # Streamlit visual dashboard
+├── analysis.ipynb                  # Offline benchmarks and algorithm comparison
+│
+├── .env                            # API credentials — NEVER commit
 ├── .gitignore
 │
-# Generated at runtime:
+# ── Generated at runtime (not committed) ──────────────────────────────
 ├── reliance_features.parquet       # Day 1 features (required for Day 2 warmup)
 ├── reliance_regimes.parquet        # Features + regime labels
-├── tmp_new_features.parquet        # Temporary features during Day 2 test
+├── tmp_new_features.parquet        # Temp features during Day 2 test
 ├── sim_state.json                  # Simulation state
-├── sim_state.json.tmp
 └── regime/
     ├── regime_detector.pkl         # Trained GMM + ARF model
     ├── reliance_features.parquet
     └── reliance_regimes.parquet
 ```
 
-> **Important:** `reliance_features.parquet` is generated by the full pipeline and is required before running Day 2 tests. Always run `main.py` first.
+> **Critical:** `reliance_features.parquet` is generated by the full pipeline and **must exist** before running Day 2 tests. Without it, all models cold-start and collapse to ~58% accuracy. Always run `main.py` first.
 
 ---
 
@@ -159,8 +182,8 @@ PROJECT/
 ### Prerequisites
 
 - Python 3.9+
-- Angel One SmartAPI account (for live streaming only)
-- Market hours for live mode: Mon–Fri 09:15–15:30 IST
+- Angel One SmartAPI account (required for live streaming only)
+- Live mode market hours: Mon–Fri 09:15–15:30 IST
 
 ### Install Dependencies
 
@@ -180,15 +203,15 @@ ANGEL_PASSWORD=your_password
 ANGEL_TOTP_SECRET=your_totp_secret
 ```
 
-> **Never commit `.env` to version control.** It is already listed in `.gitignore`.
+> `.env` is listed in `.gitignore`. Never commit it.
 
 ---
 
 ## 6. How to Run
 
-### Option A — Full Pipeline (One Command)
+### Option A — Full Pipeline (Single Command)
 
-Runs feature engineering → regime detection → backtest in sequence. Also saves `reliance_features.parquet` needed for Day 2 testing.
+Runs feature engineering → regime detection → backtest in sequence. Saves `reliance_features.parquet` for Day 2.
 
 ```bash
 python main.py --input data/orderbook.csv.xlsx
@@ -198,7 +221,6 @@ python main.py --input data/orderbook.csv.xlsx
 
 ```bash
 # Step 1: Feature engineering
-# Produces reliance_features.parquet required for Day 2 warmup
 python feature_engine.py \
     --input data/orderbook.csv.xlsx \
     --output reliance_features.parquet
@@ -214,24 +236,21 @@ python backtest.py \
     --regime_model regime/regime_model.pkl
 ```
 
-### Test on New Day's Data (Day 2)
-
-> **Prerequisite:** Run the full pipeline first. `test_new_data.py` requires `reliance_features.parquet` to exist. Without it, all models collapse to predicting one class (~58% accuracy).
+### Out-of-Sample Test — New Day's Data
 
 ```bash
-# Recommended: online learning mode
-# Models adapt to the new day's stream as they would in live trading
+# Recommended: online learning (models adapt per tick, as in live trading)
 python test_new_data.py --input data/new_day.xlsx
 
-# Inference only: models frozen at Day 1 weights
-# Use only to measure frozen generalisation, not live performance
+# Frozen inference: weights locked at Day 1 state
+# Use only to measure frozen generalisation — not live performance
 python test_new_data.py --input data/new_day.xlsx --no_learn
 ```
 
 | Mode | Expected Accuracy | Notes |
 |---|---|---|
-| `(default)` online learning | 80–85% | Models adapt per tick |
-| `--no_learn` frozen | ~58–65% | No intraday adaptation |
+| Online learning (default) | 80–85% | Models adapt per tick |
+| `--no_learn` frozen | ~58–65% | No intraday adaptation; degrades toward naive baseline |
 
 ### Streamlit Dashboard
 
@@ -242,7 +261,7 @@ streamlit run dashboard.py
 ### Live API Streaming
 
 ```bash
-# Requires .env credentials and market hours (Mon–Fri 09:15–15:30 IST)
+# Market hours only: Mon–Fri 09:15–15:30 IST
 python regime/live_engine.py
 ```
 
@@ -250,128 +269,133 @@ python regime/live_engine.py
 
 ## 7. Feature Engineering
 
-The Angel One WebSocket Mode 3 delivers **27 raw columns** per tick. From these, `feature_engine.py` computes **46 features** across four groups.
+The Angel One WebSocket Mode 3 delivers **27 raw columns** per tick. `feature_engine.py` derives **46 features** across four groups. All prices arrive in paise and are converted to rupees at the `parse_tick()` boundary before any computation.
 
-> All prices arrive in paise and are converted to rupees at the `parse_tick()` boundary before any feature computation.
+### Group 1 — Price Features (5)
 
-### Group 1 — Price Features (5 features)
-
-| Feature | Formula | Purpose |
+| Feature | Formula | Why |
 |---|---|---|
-| `mid_price` | `(ask_price_1 + bid_price_1) / 2` | True fair value; avoids LTP noise |
-| `spread` | `ask_price_1 − bid_price_1` | Liquidity and transaction cost signal |
-| `spread_pct` | `spread / ask_price_1 × 100` | Normalised spread |
-| `vwmp` | `(bid_p1 × ask_q1 + ask_p1 × bid_q1) / (bid_q1 + ask_q1)` | Pressure-adjusted fair value |
-| `ltp_mid_delta` | `ltp − mid_price` | Direction of most recent informed order |
+| `mid_price` | `(ask_p1 + bid_p1) / 2` | True fair value; LTP bounces between bid/ask and is not directionally predictive |
+| `spread` | `ask_p1 − bid_p1` | Liquidity signal; directly sets transaction cost |
+| `spread_pct` | `spread / ask_p1 × 100` | Normalised spread for cross-tick comparability |
+| `vwmp` | `(bid_p1×ask_q1 + ask_p1×bid_q1) / (bid_q1+ask_q1)` | Pressure-adjusted fair value; skews toward the dominant side |
+| `ltp_mid_delta` | `ltp − mid_price` | Buyer aggression (+) vs seller aggression (−) on last trade |
 
-### Group 2 — Order Book Features (11 features)
+### Group 2 — Order Book Features (11)
 
 | Feature | Purpose |
 |---|---|
-| `obi_l1` | Level-1 Order Book Imbalance ∈ [−1, +1] |
-| `obi` | Full 5-level OBI — strongest short-term directional signal |
-| `depth_ratio` | Total bid qty / ask qty — structural dominance |
-| `ask_depth` / `bid_depth` | Book slope — measures market impact |
-| `vwap_pressure` | Asymmetry in liquidity depth across all levels |
-| `bid_concentration` / `ask_concentration` | Aggressiveness of top-of-book buyers/sellers |
-| `fill_price_buy` | Simulated 500-share market order execution price |
+| `obi_l1` | Level-1 Order Book Imbalance ∈ [−1, +1] — top-of-book pressure |
+| `obi` | Full 5-level OBI — strongest short-term directional signal in LOB literature |
+| `depth_ratio` | Total bid qty / ask qty — structural buyer vs seller dominance |
+| `ask_depth` / `bid_depth` | Book slope — measures market impact of a large order |
+| `vwap_pressure` | `(ask_vwap − bid_vwap) / mid_price` — asymmetry across all 5 levels |
+| `bid_concentration` / `ask_concentration` | Fraction of interest at top of book — aggressiveness signal |
+| `fill_price_buy` | Simulated 500-share market order walk — realistic execution cost |
 
-### Group 3 — Support & Resistance Features (6 features)
+### Group 3 — Support & Resistance Features (6)
 
-Live support/resistance based on where the largest orders are *right now*, not historical chart levels:
+Live walls based on where the largest orders are *right now*, not chart history:
 
-- `support_price` — bid price at the largest bid quantity
-- `resistance_price` — ask price at the largest ask quantity
-- `dist_to_support`, `dist_to_resistance` — distance from mid price
-- `support_strength`, `resistance_strength` — rolling mean of wall size (w=50)
+| Feature | Definition |
+|---|---|
+| `support_price` | Bid price at `argmax(bid_qty)` across 5 levels |
+| `resistance_price` | Ask price at `argmax(ask_qty)` across 5 levels |
+| `dist_to_support` / `dist_to_resistance` | Mid price distance to each wall |
+| `support_strength` / `resistance_strength` | Rolling mean of wall size (w=50) — wall stickiness |
 
-### Group 4 — Multi-Scale Rolling Features (25 features)
+### Group 4 — Multi-Scale Rolling Features (25)
 
-Five metrics computed at five tick windows `w ∈ {1, 5, 15, 30, 60}`:
+Five metrics × five tick windows `w ∈ {1, 5, 15, 30, 60}`:
 
 | Metric | Captures |
 |---|---|
-| `realized_vol_{w}` | Volatility regime signal at each timescale |
+| `realized_vol_{w}` | Volatility at each timescale — primary regime signal |
 | `rolling_return_{w}` | Directional momentum at each timescale |
 | `obi_mean_{w}` | Sustained directional bias (noise-filtered OBI) |
-| `spread_vol_{w}` | Liquidity regime indicator |
+| `spread_vol_{w}` | Liquidity regime — secondary regime indicator |
 | `volume_spike_{w}` | Abnormal volume activity preceding price moves |
 
-**Why five windows:** A 60-tick window captures the macro trend. A 5-tick window captures current momentum. A 1-tick window captures microstructure noise. Using only one window means the model is blind to everything happening at other scales.
+**Why five windows:** Regimes operate at multiple time horizons simultaneously. A 60-tick window captures the macro trend; a 5-tick window captures current momentum; a 1-tick window captures microstructure noise. A single window is blind to everything at other scales.
 
-### Target
+### Prediction Target
 
 ```
-target_t = 1 if mid_price_(t+30) > mid_price_t else 0
+target_t = 1  if mid_price_(t+30) > mid_price_t  else 0
 ```
 
-Binary UP/DOWN at a **30-tick horizon** — the empirically supported sweet spot where OBI has predictive power but autocorrelation noise is sufficiently dampened.
+**30-tick horizon:** below 10 ticks you are predicting autocorrelation noise; above 100 ticks OBI decays and microstructure features lose power. 30 ticks is the empirically supported sweet spot in LOB literature.
 
 ---
 
 ## 8. Regime Detection
 
-A single model trained on all market conditions learns the *average* of all regimes and performs poorly in each. The solution is a two-stage pipeline:
+A model trained across all market conditions learns the *average* of all regimes and underperforms in each. The solution is a two-stage unsupervised → supervised pipeline.
 
 ### Stage 1 — Gaussian Mixture Model (GMM)
 
-GMM is run **once offline** on Day 1 data to generate regime labels. It fits K=3 Gaussian components to `[realized_vol_60, rolling_return_60]` and assigns:
+Run **once offline** on Day 1 data. Fits K=3 Gaussian components to `[realized_vol_60, rolling_return_60]` and labels clusters by their characteristics:
 
-| Cluster | Label | Regime ID |
+| Characteristic | Label | Regime ID |
 |---|---|---|
 | Highest realized volatility | Volatile | 2 |
 | Most negative rolling return (of remaining) | Bearish | 1 |
 | Remaining | Bullish | 0 |
 
-GMM was chosen over K-Means (which assumes spherical clusters) and HMM (which is not online and struggles with sudden regime changes like news events).
+GMM was chosen over K-Means (assumes spherical clusters; financial features are ellipsoidal) and HMM (not online; Baum-Welch requires the full sequence; temporal dependency assumption broken by sudden news-driven regime shifts).
 
 ### Stage 2 — Adaptive Random Forest (ARF)
 
-ARF is trained **online** using GMM labels as supervision. It detects regime in real time on new ticks without retraining.
+Trained **online** using GMM labels as supervision. Detects regime on new ticks in real time without retraining.
 
-**Input features for ARF:**
-`realized_vol_60`, `realized_vol_15`, `rolling_return_60`, `rolling_return_15`, `obi_mean_60`, `spread_vol_60`
+**ARF input features:** `realized_vol_60`, `realized_vol_15`, `rolling_return_60`, `rolling_return_15`, `obi_mean_60`, `spread_vol_60`
 
-ARF advantages over simpler alternatives:
-- Truly online — updates per tick via `learn_one()`
-- Non-linear — captures complex regime boundaries
-- Self-replacing — automatically replaces its weakest tree when ADWIN detects drift
-- No manual monitoring required
+Both 15t and 60t windows let ARF distinguish *fast volatility spike within slow downtrend* vs *fast spike within slow uptrend* — different regimes that a single-window detector conflates.
+
+**Why ARF:** Truly online (`learn_one()` per tick) · Non-linear boundaries · Self-replacing (weakest tree replaced on internal ADWIN drift) · No manual monitoring.
 
 ---
 
 ## 9. Online Forecasting Models
 
-Three models with **fundamentally different inductive biases** run in parallel on every tick:
+Three models with **fundamentally different inductive biases** run in parallel on every tick, covering each other's blind spots:
 
 | Model | Core Assumption | Wins When |
 |---|---|---|
-| **FTRL** | Linear, per-feature adaptive learning rates | Trending regimes; OBI and momentum signals are consistent |
-| **Hoeffding Tree** | Non-linear decision boundaries; feature interactions matter | Regime boundaries; single features alone are insufficient |
-| **PA Classifier** | Update only on mistakes; do nothing on correct predictions | Low-volatility regimes; conservative updating prevents noise chasing |
+| **FTRL** | Linear · per-feature adaptive learning rates | Trending regimes; OBI and momentum signals consistent |
+| **Hoeffding Tree** | Non-linear boundaries · feature interactions matter | Regime transitions; single features insufficient |
+| **PA Classifier** | Update only on mistakes; passive on correct predictions | Low-volatility; prevents noise chasing |
 
 ### FTRL (Follow The Regularized Leader)
 
-Google's production algorithm for real-time prediction (originally for ad click prediction). Key properties:
-- Per-feature adaptive learning rates — noisy features (OBI) get smaller rates automatically
-- L1 regularization produces sparse weights — automatic feature selection on the fly
-- Continuous updates on every tick — builds strong signal in trending regimes
+Google's production algorithm for billion-scale real-time prediction. Key properties:
+- Per-feature adaptive learning rates — noisy features (OBI) get suppressed automatically; stable features (rolling Sharpe) trusted more
+- L1 regularization → sparse weight vectors → automatic feature selection on the fly
+- Continuous updates on every tick → builds strong signal in trending regimes (PA misses 70% of updates in the same scenario)
 
 ### Hoeffding Tree (VFDT)
 
-Builds incrementally from a stream using the Hoeffding bound to determine statistically confident splits. Captures non-linear feature interactions that linear models miss (e.g. `OBI > 0.3 AND spread_vol < 0.05` predicts UP; `OBI > 0.3 AND spread_vol > 0.05` does not).
+Builds incrementally from a stream using the Hoeffding bound to wait for statistically confident splits. Captures non-linear interactions like:
 
-> **Note:** Returns `None` for the first 50 predictions (grace period). The ensemble defaults these to 0.
+```
+Bull regime:     OBI > 0.3                          → UP
+Volatile regime: OBI > 0.3 AND spread_vol < 0.05   → UP
+                 OBI > 0.3 AND spread_vol > 0.05   → not UP
+```
+
+Linear models (FTRL, PA) cannot represent this. The Hoeffding Tree does automatically.
+
+> **Grace period:** Returns `None` for first 50 predictions while accumulating split statistics. Ensemble defaults these to 0.
 
 ### Passive-Aggressive Classifier (PA)
 
-Updates only when a mistake is made or the margin is insufficient. In low-volatility regimes where signal is weak, PA stabilises weights instead of chasing noise.
+Structurally conservative: `τ_t = 0` when prediction is correct and margin is sufficient — no weight update at all. In low-volatility regimes where signal is weak, PA stabilises while FTRL would jitter weights on every tick.
 
-> **Warning on PA's 96% accuracy:** PA alone achieves 95–96% accuracy by memorising intraday serial correlation within a single trading day. Frozen inference on a new day drops to 58%. **The meaningful number is the ensemble (83–85%), not PA in isolation.**
+> **⚠️ Warning on PA's 96% accuracy:** PA alone achieves 95–96% by memorising intraday serial correlation within a single day. Frozen inference on a new day drops to **58%**. This is overfitting to autocorrelation, not generalisation. The meaningful number is the **ensemble (83–85%)**, not PA in isolation.
 
-### Input Features for All Three Forecasters (13 total)
+### Forecaster Input Features (13 total)
 
-`obi_1`, `obi_5`, `obi_15`, `spread_vol_5`, `spread_vol_15`, `ltp_mid_delta`, `vwmp`, `rolling_return_5`, `rolling_return_15`, `dist_to_support`, `dist_to_resistance`, `support_strength`, `resistance_strength`
+`obi_mean_1`, `obi_mean_5`, `obi_mean_15`, `spread_vol_5`, `spread_vol_15`, `ltp_mid_delta`, `vwmp`, `rolling_return_5`, `rolling_return_15`, `dist_to_support`, `dist_to_resistance`, `support_strength`, `resistance_strength`
 
 ---
 
@@ -379,7 +403,7 @@ Updates only when a mistake is made or the margin is insufficient. In low-volati
 
 ### Two-Stage Weight Computation
 
-**Stage 1 — Regime Prior** (initial weights based on regime):
+**Stage 1 — Regime Prior** (structural belief about model suitability):
 
 | Regime | FTRL | Hoeffding | PA |
 |---|---|---|---|
@@ -387,34 +411,47 @@ Updates only when a mistake is made or the margin is insufficient. In low-volati
 | Bearish (1) | 0.3 | 0.5 | 0.2 |
 | Volatile (2) | 0.2 | 0.3 | 0.5 |
 
-**Stage 2 — Rolling Accuracy Adjustment** (over last 100 ticks):
+**Stage 2 — Rolling Accuracy Adjustment** (empirical performance over last 100 ticks):
 
-Final weights are a 50/50 blend of regime priors and rolling accuracy-normalised weights. This means the ensemble continuously re-evaluates which model deserves trust *right now*, not just based on historical assumptions.
+```
+ŵ_m^acc  =  â_m / Σ â_m'          (accuracy-normalised)
+
+w_m^final = 0.5 · w_m^regime + 0.5 · w_m^acc
+            ─────────────────────────────────   (normalised to sum to 1)
+            Σ (0.5 · w_m'^regime + 0.5 · w_m'^acc)
+```
+
+The 50/50 blend respects regime structure while continuously re-evaluating which model actually deserves trust right now. The best model in hour one may be the worst in hour three.
 
 **Final prediction:**
 ```
-score = w_ftrl × ŷ_ftrl + w_hoeff × ŷ_hoeff + w_pa × ŷ_pa
-ŷ_final = 1 if score ≥ 0.5 else 0
+score    = w_ftrl · ŷ_ftrl + w_hoeff · ŷ_hoeff + w_pa · ŷ_pa
+ŷ_final  = 1  if score ≥ 0.5  else 0
 ```
 
-### ADWIN Drift Detection
+### ADWIN Concept Drift Detection
 
-ADWIN (Adaptive Windowing) maintains a variable-size window of recent error observations and uses a statistical test to detect when the recent error rate differs significantly from the older half of the window.
+ADWIN (Adaptive Windowing) splits its error window at position `i` when:
 
-**On drift — boost learning rates, do not reset:**
+```
+|µ̂₀ − µ̂₁| ≥ ε_cut = sqrt( (1/2m) · ln(4n/δ) )
+```
 
-Resetting throws away everything the model learned. Instead:
-- FTRL α: `0.1 → 0.3` (faster adaptation)
-- PA C: `0.1 → 0.5` (more aggressive on mistakes)
-- ARF: replaces its weakest tree automatically
+When drift is detected — **boost learning rates, do not reset:**
 
-This keeps prior knowledge as a starting point while weighting new observations more heavily — fast adaptation without a blind period.
+| Component | Normal | On Drift |
+|---|---|---|
+| FTRL α | 0.1 | 0.3 |
+| PA C | 0.1 | 0.5 |
+| ARF | — | Replaces weakest tree |
+
+Resetting throws away all learned weights. Boosting keeps prior knowledge as a warm start while weighting new observations more heavily — fast adaptation without a recovery blind period.
 
 ---
 
 ## 11. Results
 
-### Day 1 (May 13 2026) — Training & Evaluation
+### Day 1 — May 13 2026 (Backtest on Held-Out 20%)
 
 | Model | Accuracy |
 |---|---|
@@ -422,19 +459,17 @@ This keeps prior knowledge as a starting point while weighting new observations 
 | Hoeffding Tree alone | 60.90% |
 | FTRL alone | 73.70% |
 | **Ensemble** | **85.04%** |
-| PA alone* | 96.01%* |
+| PA alone ⚠️ | 96.01% |
 
-*See PA warning above
-
-**Per-Regime Accuracy:**
+**Per-regime accuracy:**
 
 | Regime | Ticks | Accuracy |
 |---|---|---|
-| Bullish | 0 | — (not observed on this day) |
+| Bullish | 0 | — (not observed; bearish/choppy day) |
 | Bearish | 1,119 | 82.75% |
 | Volatile | 5,824 | 85.47% |
 
-**Latency:**
+**Inference latency:**
 
 | Metric | Value |
 |---|---|
@@ -444,19 +479,17 @@ This keeps prior knowledge as a starting point while weighting new observations 
 | Max | 971,900 ns |
 | WebSocket tick interval | 100–500 ms |
 
-All predictions complete well within the WebSocket tick interval.
-
-### Day 2 (May 14 2026) — Out-of-Sample Generalisation
+### Day 2 — May 14 2026 (Completely Unseen Session)
 
 | | Day 1 | Day 2 |
 |---|---|---|
 | Naive baseline | 41.15% | 41.88% |
-| **Ensemble accuracy** | **85.04%** | **83.41%** |
+| **Ensemble** | **85.04%** | **83.41%** |
 | Accuracy drop | — | −1.63 pp |
 | Mean latency | 0.315 ms | 0.152 ms |
 | Drift events | 7 | 9 |
 
-**Day 2 Classification Report:**
+**Classification report:**
 
 | Class | Precision | Recall | F1 | Support |
 |---|---|---|---|---|
@@ -465,41 +498,27 @@ All predictions complete well within the WebSocket tick interval.
 | **Accuracy** | | | **0.8341** | 10,250 |
 | Macro avg | 0.8325 | 0.8247 | 0.8278 | 10,250 |
 
-The model generalises. Only 1.63 percentage points were lost moving to a completely unseen trading session.
+> **On frozen inference:** Running `--no_learn` on Day 2 produced **58.12%** — identical to the always-DOWN naive baseline. Online learning is not optional for cross-day inference.
 
 ---
 
 ## 12. Design Decisions
 
-### Why Time-Ordered Train/Test Split
+### Time-Ordered Train/Test Split
 
-A random split leaks future data into training — the morning of a trading day would be in test while the afternoon is in training, meaning the model has "seen the future." This inflates accuracy by 5–15 percentage points and produces numbers that are entirely fictitious in live trading.
+A random split leaks future data into training. This inflates accuracy by 5–15 pp and produces numbers that are fictitious in live trading. **Split used:** first 80% of rows for training, last 20% for testing.
 
-**Split used:** First 80% of rows for training, last 20% for testing.
+### Binary Target Over 3-Class
 
-### Why Binary Target Instead of 3-Class
+The original 3-class formulation (UP / NEUTRAL / DOWN) produced 81% NEUTRAL rows at H=50. Macro F1 ≈ 0.33 across all offline benchmarks — equal to random chance for 3 classes. Binary UP/DOWN gives a 44%/56% tractable split and 85% ensemble accuracy.
 
-The original pipeline used 3-class labels (UP / NEUTRAL / DOWN). At H=50, 81% of rows were NEUTRAL, making the actionable minority classes nearly impossible to predict (macro F1 ≈ 0.33 ≈ random chance).
+### Boost on Drift, Not Reset
 
-Binary UP/DOWN removes the NEUTRAL class. The resulting 44%/56% split is tractable for all three online models.
+Resetting discards all prior knowledge. If FTRL learned `OBI > 0.4` predicts UP with 70% reliability, resetting deletes that. Recovery takes hundreds of ticks. Increasing the learning rate on drift achieves fast adaptation without a blind period.
 
-### Why Python and Not C++
+### Python Over C++
 
-Python inference averages 315µs (Day 1) and 152µs (Day 2). For a WebSocket feed with 100–500ms tick intervals, this is entirely acceptable.
-
-A production C++ engine (`pa_engine.cpp`) using AVX2 SIMD achieves sub-microsecond inference and is relevant for co-location deployments requiring tick-to-order latency under 10µs — that is future work.
-
-### Why Online Models and Not LightGBM/XGBoost
-
-Offline benchmark results (macro F1 on 3-class formulation):
-
-| Algorithm | H=50 | H=100 | H=200 | H=300 |
-|---|---|---|---|---|
-| LightGBM | 0.3148 | 0.3025 | 0.3276 | 0.3032 |
-| XGBoost | 0.3106 | 0.2997 | 0.3099 | 0.2963 |
-| CatBoost | 0.2549 | 0.2890 | 0.2839 | 0.2690 |
-
-All scores ≈ 0.33 = random chance for 3 classes. Additionally, these models cannot update per tick without full retraining. The online binary formulation achieves 85% accuracy vs 41% naive baseline.
+Python inference averages 315µs (Day 1) / 152µs (Day 2). For a 100–500ms WebSocket feed this is entirely acceptable. C++ becomes necessary for co-location deployments requiring sub-10µs tick-to-order latency — tracked as future work.
 
 ---
 
@@ -507,52 +526,51 @@ All scores ≈ 0.33 = random chance for 3 classes. Additionally, these models ca
 
 ### Honest Limitations
 
-1. **Two days of data** — The system has been validated on May 13–14 2026 only. Longer-term generalisation across varied market conditions is unproven.
-2. **No Bullish regime observed** — Both test days were bearish/volatile. Ensemble weights for Bullish regime (FTRL=0.6) are untested assumptions.
-3. **Online learning required for cross-day inference** — Frozen (`--no_learn`) inference on a new day produces ~58% accuracy. Models need per-tick updates to adapt to a new session's rolling feature distribution.
-4. **PA's 96% accuracy is not a generalizable result** — It reflects memorised intraday autocorrelation, not genuine predictive skill. The ensemble (83–85%) is the meaningful metric.
-5. **5-level book only** — Institutional players with 20+ level access have an information advantage.
-6. **No alternative data** — No news, FII/DII flow, options data, or sentiment. Purely technical.
-7. **Single symbol** — Trained and tested on RELIANCE-EQ only.
+1. **Two days of data** — Validated on May 13–14 2026 only. Longer-term generalisation across varied conditions is unproven.
+2. **No Bullish regime observed** — Both sessions were bearish/volatile. Ensemble weights for Bullish (FTRL=0.6) are untested structural priors.
+3. **Online learning required** — Frozen inference degrades to the naive baseline. Models must adapt per tick.
+4. **PA's 96% ≠ generalisation** — Reflects intraday autocorrelation memorisation. The ensemble (83–85%) is the meaningful metric.
+5. **5-level book only** — Institutional players with 20+ levels have an information advantage.
+6. **No alternative data** — No news, FII/DII flow, options, or sentiment. Purely technical microstructure.
+7. **Single symbol** — RELIANCE-EQ only. Generalisation to other symbols unverified.
 
 ### Future Work (Priority Order)
 
-1. Collect 20+ days of data — expose all three regimes to GMM, validate generalisation across varied market conditions
-2. Implement walk-forward cross-validation — expanding window retraining for robust out-of-sample estimates
-3. LinUCB contextual bandit — replace hardcoded regime-to-weight mapping with a learned selector
-4. C++ inference for co-location deployments (extend existing `pa_engine.cpp`)
-5. Add signed order flow imbalance (OFI) and trade tick features
-6. Multi-symbol generalisation — train on RELIANCE, evaluate on TCS/HDFC
-7. 2-state HMM on (OBI, log-spread) to replace GMM once sufficient data is available
-8. PnL simulation with realistic transaction costs to convert directional accuracy into a tradeable signal assessment
+1. Collect 20+ trading days — expose all three regimes to GMM, validate generalisation
+2. Walk-forward cross-validation — expanding window retraining for robust OOS estimates
+3. LinUCB contextual bandit — replace hardcoded regime-to-weight table with a learned selector
+4. C++ inference for co-location (extend existing `pa_engine.cpp` via AVX2 SIMD)
+5. Signed order flow imbalance (OFI) + trade tick features
+6. Multi-symbol test — train on RELIANCE, evaluate on TCS/HDFCBANK
+7. 2-state HMM on `(OBI, log-spread)` to replace GMM once sufficient data is available
+8. PnL simulation with realistic transaction costs — convert directional accuracy into a tradeable signal assessment
 
 ---
 
 ## 14. Live API Setup
 
-Live streaming requires a valid Angel One SmartAPI account and a `.env` file:
-
 ```env
-ANGEL_API_KEY=your_api_key_here
+# .env
+ANGEL_API_KEY=your_api_key
 ANGEL_CLIENT_ID=your_client_id
 ANGEL_PASSWORD=your_password
 ANGEL_TOTP_SECRET=your_totp_secret
 ```
 
-The `smartapi/` package handles authentication, TOTP generation, rate limiting, and WebSocket connection management.
+The `smartapi/` package handles authentication, TOTP 2FA, rate limiting, and WebSocket lifecycle management. The live engine subscribes to Mode 3 on startup, computes features on every incoming tick, detects the current regime, and emits UP/DOWN predictions in real time.
 
 ```bash
-# Start live streaming (market hours only: Mon–Fri 09:15–15:30 IST)
+# Market hours only: Mon–Fri 09:15–15:30 IST
 python regime/live_engine.py
 ```
 
-The live engine streams Mode 3 tick data, computes features on every tick, detects the current regime, and outputs UP/DOWN predictions in real time.
-
 ---
 
-## Data Collected (May 13 2026)
+## Dataset
 
-| Symbol | Company | Token | Rows |
+All data collected on NSE via Angel One SmartAPI WebSocket Mode 3:
+
+| Symbol | Company | Token | Rows (May 13 2026) |
 |---|---|---|---|
 | RELIANCE-EQ | Reliance Industries | 2885 | 34,743 |
 | HDFCBANK-EQ | HDFC Bank | 3045 | 35,934 |
@@ -561,8 +579,8 @@ The live engine streams Mode 3 tick data, computes features on every tick, detec
 | ICICIBANK-EQ | ICICI Bank | 1660 | 14,155 |
 | **Total** | | | **135,924** |
 
-All modelling uses RELIANCE-EQ only (most liquid name in the set).
+All modelling uses **RELIANCE-EQ only** — the most liquid name in the set, minimising adverse selection and maximising OBI signal quality.
 
 ---
 
-*Internal research document — DOM Trade, May 2026*
+*DOM Trade · Internal Research · May 2026*
