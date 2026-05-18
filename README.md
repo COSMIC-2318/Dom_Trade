@@ -88,41 +88,41 @@ When 50,000 shares are sitting at a bid level, that is a wall — price is unlik
 Raw WebSocket Ticks  ←  Angel One SmartAPI (Mode 3, 27 columns/tick)
          │
          ▼
-┌────────────────────────────────────────┐
-│  A   feature_engine.py                        │
-       46 microstructure features from raw ticks│
-│      Price · OBI · S/R · Rolling.             │
-└──────────────┬─────────────────────────┘
+┌────────────────────────────────────────────────┐
+│  A   feature_engine.py                         │
+│      46 microstructure features from raw ticks │
+│      Price · OBI · S/R · Rolling.              │
+└──────────────┬─────────────────────────────────┘
                   │ 
                   ▼
-┌─────────────────────────────────────────┐
-│  B   regime_detector_v2.py.                    │
-│      Stage 1: GMM  (offline label generation)  │
-│      Stage 2: ARF  (online real-time detection)│
-└──────────────┬──────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  B   regime_detector_v2.py.                     │
+│      Stage 1: GMM  (offline label generation)   │
+│      Stage 2: ARF  (online real-time detection) │
+└──────────────┬──────────────────────────────────┘
                   │  regime ∈ { Bullish=0, Bearish=1, Volatile=2 }
                   ▼
-┌──────────────────────────────────────────────────────┐
+┌────────────────────────────────────────────────────────────────┐
 │  C   forecasters.py                                            │
-│      ├── FTRL           (trending regimes)                    │
-│      ├── Hoeffding Tree  (regime boundaries)                  │
-│      └── PA Classifier   (low-volatility regimes)             │
-└──────────────┬───────────────────────────────────────┘
+│      ├── FTRL           (trending regimes)                     │
+│      ├── Hoeffding Tree  (regime boundaries)                   │
+│      └── PA Classifier   (low-volatility regimes)              │
+└──────────────┬─────────────────────────────────────────────────┘
                │  3 parallel UP/DOWN predictions
                ▼
-┌───────────────────────────────────────┐
-│  D   ensemble.py
-           │─  Two-stage dynamic weighting
-│          │─ + ADWIN concept drift detection
-└──────────────┬────────────────────────┘
+┌─────────────────────────────────────────────┐
+│  D   ensemble.py                            │
+│           │─  Two-stage dynamic weighting   │
+│          │─ + ADWIN concept drift detection │
+└──────────────┬──────────────────────────────┘
                  │  final UP / DOWN signal
        ┌───────┴──────────┬──────────────┐
        ▼                  ▼              ▼
-┌────────────┐   ┌──────────────┐  ┌───────────┐
-│ E backtest   │   │ F live_         │  │ G dash-     │
-│ .py          │   │ engine.py.      │  │ board.py    │
-│ evaluation.  │   │ production.     │  │ Streamlit.  │
-└────────────┘   └──────────────┘  └───────────┘
+┌────────────┐   ┌────────────────┐  ┌─────────────┐
+│ E          │   │ F              │  │ G           │
+│ backtest.py│   │ live_engine.py │  │ dashboard.py│
+│ evaluation │   │ production     │  │ Streamlit   │
+└────────────┘   └────────────────┘  └─────────────┘
 ```
 
 ---
